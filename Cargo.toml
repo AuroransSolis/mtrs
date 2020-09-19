@@ -1,0 +1,31 @@
+[package]
+name = "mtrs"
+version = "0.1.0"
+authors = ["Aurorans Solis <primalucegd@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+logos = "0.11.4"
+codespan = "0.9.5"
+
+[lib]
+name = "mips_parser"
+path = "parser/lib.rs"
+
+[[bin]]
+name = "m2rs"
+path = "transpilers/rust/main.rs"
+
+# [[bin]]
+# name = "m2x86"
+# path = "transpilers/x86/main.rs"
+
+# [[bin]]
+# name = "m2amd64"
+# path = "transpilers/amd64/main.rs"
+
+# [[bin]]
+# name = "m2llvmir
+# path = "transpilers/llvm-ir/main.rs"
