@@ -1,6 +1,4 @@
-use crate::{
-    directive::Directive, identifier::Identifier, instruction::Instruction, register::Register,
-};
+use crate::{directive::Directive, identifier::Identifier, register::Register};
 use logos::{Lexer, Logos};
 use std::{
     fmt::{self, Debug},
@@ -13,13 +11,8 @@ pub enum Token {
     AssemblerDirective(Directive),
     #[token(",")]
     Comma,
-    #[regex(r"0b[01]+|0o[0-7]+|0x[\da-fA-F]+|-?[\d]+(\.[\d]+)?", |lex| lex.slice().to_string())]
+    #[regex(r"(0b[01]+|0o[0-7]+|0x[\da-fA-F]+|-?[\d]+(\.[\d]+)?)", |lex| lex.slice().to_string())]
     NumberImmediate(String),
-    #[regex(
-        r"(0b[01]+|0o[0-7]+|0x[\da-fA-F]+|-?[\d]+(\.[\d]+)?)(, ?0b[01]+|0o[0-7]+|0x[\da-fA-F]+|-?[\d]+(\.[\d]+)?)+",
-        |lex| lex.slice().to_string()
-    )]
-    NumberImmediateList(String),
     #[regex(r"[a-zA-Z_]+[a-zA-Z\d_\.]*", Identifier::lex)]
     Identifier(Identifier),
     #[regex(r"[\w_]+:", |lex| lex.slice().trim_end_matches(':').to_string())]
@@ -99,7 +92,7 @@ fn test_lex_immediate() {
         "-420",
     ];
     let results = [
-        Token::NumberImmediate("0b1001_0110_0110_1001".to_string()),
+        Token::NumberImmediate("0b1001011001101001".to_string()),
         Token::NumberImmediate("0o0123443210".to_string()),
         Token::NumberImmediate("0xaaaaaaa".to_string()),
         Token::NumberImmediate("1337".to_string()),

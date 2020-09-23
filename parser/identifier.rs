@@ -1,7 +1,8 @@
 use crate::{instruction::Instruction, token::Token};
 use logos::{Lexer, Logos};
+use std::fmt::{self, Debug};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Identifier {
     Instruction(Instruction),
     Label(String),
@@ -12,6 +13,15 @@ impl Identifier {
         Instruction::lex(lex)
             .map(|instruction| Identifier::Instruction(instruction))
             .or_else(|| Some(Identifier::Label(lex.slice().to_string())))
+    }
+}
+
+impl Debug for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Identifier::Instruction(instruction) => write!(f, "{:?}", instruction),
+            Identifier::Label(label) => write!(f, "{}", label),
+        }
     }
 }
 

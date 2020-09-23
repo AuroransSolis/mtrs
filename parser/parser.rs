@@ -2,39 +2,47 @@ use crate::{
     directive::Directive, expression::Expression, identifier::Identifier, instruction::Instruction,
     token::Token,
 };
-use logos::{Lexer, Logos};
+use logos::{Lexer, Logos, Span};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum Error {
-    #[error("Byte literal out of range: {0:?}")]
-    ByteLiteralOutOfRange(Token),
-    #[error("Duplicate section directive at {0}")]
+    #[error("Byte literal out of range: {token:?} ({span:?})")]
+    ByteLiteralOutOfRange { token: Token, span: Span },
+    #[error("Duplicate section directive {0}")]
     DuplicateSectionDirective(codespan::Span),
     #[error("End of file")]
     Eof,
-    #[error("Half literal out of range: {0:?}")]
-    HalfLiteralOutOfRange(Token),
+    #[error("Half literal out of range: {token:?} ({span:?})")]
+    HalfLiteralOutOfRange { token: Token, span: Span },
     #[error("Incorrect literal type '{expected:?}'. Expected '{expected:?}'")]
-    IncorrectLiteralType { got: Token, expected: &'static str },
-    #[error("Got register for CP{got} where register for CP{expected} was expected at {token:?}")]
+    IncorrectLiteralType {
+        got: Token,
+        span: Span,
+        expected: &'static str,
+    },
+    #[error("Register for CP{got} where register for CP{expected} was expected at {span:?}")]
     IncorrectCoprocRegister {
         got: &'static str,
         expected: &'static str,
-        token: Token,
+        span: Span,
     },
-    #[error("Invalid alignment '{0:?}'. Alignment values may only be in [0, 3].")]
-    InvalidAlignment(Token),
-    #[error("Invalid float literal '{0:?}'")]
-    InvalidFloatLiteral(Token),
-    #[error("Invalid integer literal '{0:?}'")]
-    InvalidIntegerLiteral(Token),
+    #[error("Invalid alignment '{token:?}' ({span:?}). Alignment values may only be in [0, 3].")]
+    InvalidAlignment { token: Token, span: Span },
+    #[error("Invalid float literal '{0:?}' ({1:?})")]
+    InvalidFloatLiteral(Token, Span),
+    #[error("Invalid integer literal '{0:?}' ({1:?})")]
+    InvalidIntegerLiteral(Token, Span),
     #[error("Lexer error at {0}")]
     LexerError(codespan::Span),
     #[error("Missing comma at {0}")]
     MissingComma(codespan::Span),
-    #[error("Got unexpected token '{got:?}'. Expected '{expected:?}")]
-    UnexpectedToken { got: Token, expected: &'static str },
+    #[error("Got unexpected token '{got:?}' ({span:?}). Expected '{expected:?}")]
+    UnexpectedToken {
+        got: Token,
+        span: Span,
+        expected: &'static str,
+    },
     #[error("Undefined label '{0}' at {1}")]
     UnknownLabel(String, codespan::Span),
 }
@@ -46,7 +54,8 @@ enum Section {
 }
 
 pub struct Parser<'lex> {
-    pub lexer: Lexer<'lex, Token>,
+    pub(crate) lexer: Lexer<'lex, Token>,
+    pub(crate) carry: Option<Token>,
     section: Section,
     expressions: Vec<Expression>,
     defined_labels: Vec<String>,
@@ -56,10 +65,15 @@ impl<'lex> Parser<'lex> {
     pub fn new(s: &'lex str) -> Parser<'lex> {
         Parser {
             lexer: Token::lexer(s),
+            carry: None,
             section: Section::Data,
             expressions: Vec::new(),
             defined_labels: Vec::new(),
         }
+    }
+
+    pub(crate) fn next(&mut self) -> Option<Token> {
+        self.carry.take().or_else(|| self.lexer.next())
     }
 
     pub fn parse(mut self) -> Result<Vec<Expression>, Error> {
@@ -80,11 +94,13 @@ impl<'lex> Parser<'lex> {
                 }
                 other => Err(Error::UnexpectedToken {
                     got: Token::AssemblerDirective(other),
+                    span: self.lexer.span(),
                     expected: "data or text section directive",
                 }),
             },
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: self.lexer.span(),
                 expected: "data or text section directive",
             }),
         }?;
@@ -97,12 +113,17 @@ impl<'lex> Parser<'lex> {
     }
 
     fn first_pass(&mut self) -> Result<(), Error> {
-        while let Some(first) = self.lexer.next() {
-            println!("parsing: {:?}", first);
-            self.expressions.push(match first {
+        while let Some(first) = self.next() {
+            let expression = match first {
                 Token::AssemblerDirective(directive) => match directive {
                     Directive::DataSection => {
-                        if self.section == Section::Text {
+                        // .data is only valid when in the .text section and if no .data section has
+                        // previously been declared.
+                        if self.section == Section::Text
+                            && !self
+                                .expressions
+                                .contains(&Expression::Section(Directive::DataSection))
+                        {
                             self.section = Section::Data;
                             Ok(Expression::Section(directive))
                         } else {
@@ -113,7 +134,13 @@ impl<'lex> Parser<'lex> {
                         }
                     }
                     Directive::TextSection => {
-                        if self.section == Section::Data {
+                        // .text is only valid when in the .data section and if no .text section has
+                        // previously been declared.
+                        if self.section == Section::Data
+                            && !self
+                                .expressions
+                                .contains(&Expression::Section(Directive::TextSection))
+                        {
                             self.section = Section::Text;
                             Ok(Expression::Section(directive))
                         } else {
@@ -123,45 +150,56 @@ impl<'lex> Parser<'lex> {
                             )))
                         }
                     }
-                    Directive::GlobalSymbol => Directive::parse(directive, &mut self.lexer),
+                    // .globl is valid anywhere.
+                    Directive::GlobalSymbol => Directive::parse(directive, self),
                     _ => match self.section {
-                        Section::Data => Directive::parse(directive, &mut self.lexer),
+                        // Other directives are only valid in the .data section.
+                        Section::Data => Directive::parse(directive, self),
                         Section::Text => Err(Error::UnexpectedToken {
                             got: Token::AssemblerDirective(directive),
+                            span: self.lexer.span(),
                             expected: "instruction or label declaration",
                         }),
                     },
                 },
                 Token::Identifier(ident) => match self.section {
+                    // Only label defs allowed in .data - instructions or independent labels are
+                    // invalid.
                     Section::Data => Err(Error::UnexpectedToken {
                         got: Token::Identifier(ident),
+                        span: self.lexer.span(),
                         expected: "assembler directive",
                     }),
                     Section::Text => match ident {
-                        Identifier::Instruction(instr) => {
-                            Instruction::parse(instr, &mut self.lexer)
-                        }
+                        Identifier::Instruction(instr) => Instruction::parse(instr, self),
+                        // Labels must be used with an instruction, cannot be independent.
                         label => Err(Error::UnexpectedToken {
                             got: Token::Identifier(label),
+                            span: self.lexer.span(),
                             expected: "instruction or label definition",
                         }),
                     },
                 },
+                // Label defs are valid anywhere.
                 Token::LabelDefinition(label) => {
                     self.defined_labels.push(label.clone());
                     Ok(Expression::LabelDefinition(label))
                 }
+                // Everything else cannot be the start of an expression.
                 other => Err(match self.section {
                     Section::Data => Error::UnexpectedToken {
                         got: other,
+                        span: self.lexer.span(),
                         expected: "assembler directive",
                     },
                     Section::Text => Error::UnexpectedToken {
                         got: other,
+                        span: self.lexer.span(),
                         expected: "instruction or label definition",
                     },
                 }),
-            }?);
+            }?;
+            self.expressions.push(expression);
         }
         Ok(())
     }

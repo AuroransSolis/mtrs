@@ -1,6 +1,6 @@
 use crate::{directive::Directive, instruction::Instruction, register::Register};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Expression {
     Section(Directive),
     FloatDirective(Directive, f32),
@@ -16,6 +16,7 @@ pub enum Expression {
     Cp02Lab1(Instruction, Register, Register, String),
     Cp01(Instruction, Register),
     Cp01Cp11(Instruction, Register, Register),
+    Cp01Imm1(Instruction, Register, i32),
     Cp01Lab1(Instruction, Register, String),
     Cp01Off1(Instruction, Register, i32, Register),
     Lab1(Instruction, String),

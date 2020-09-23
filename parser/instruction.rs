@@ -1,7 +1,7 @@
 use crate::{
     expression::Expression,
     identifier::Identifier,
-    parser::Error,
+    parser::{Error, Parser},
     register::Register,
     token::{lspan_to_csspan, parse_immediate, Token},
 };
@@ -18,9 +18,13 @@ pub enum Instruction {
     And,
     AndImmediate,
     BranchOnEq,
+    BranchOnGt,
+    BranchOnGte,
     BranchOnGteZero,
     BranchOnGteZeroAndLink,
     BranchOnGtZero,
+    BranchOnLt,
+    BranchOnLte,
     BranchOnLteZero,
     BranchOnLtZero,
     BranchOnLtZeroAndLink,
@@ -33,10 +37,21 @@ pub enum Instruction {
     FpAdditionSingle,
     FpBranchOnConditionFalse,
     FpBranchOnConditionTrue,
+    FpCeilingDoubleToInteger,
+    FpCeilingSingleToInteger,
     FpCompareEqDouble,
     FpCompareEqSingle,
+    FpCompareGtDouble,
+    FpCompareGtSingle,
+    FpCompareGteDouble,
+    FpCompareGteSingle,
+    FpCompareLtDouble,
+    FpCompareLtSingle,
     FpCompareLteDouble,
     FpCompareLteSingle,
+    FpConditionalMoveCp0,
+    FpConditionalMoveDoubleCp1,
+    FpConditionalMoveSingleCp1,
     FpConvertSingleToDouble,
     FpConvertIntegerToDouble,
     FpConvertDoubleToSingle,
@@ -53,6 +68,8 @@ pub enum Instruction {
     FpMultiplySingle,
     FpNegateDouble,
     FpNegateSingle,
+    FpSquareRootDouble,
+    FpSquareRootSingle,
     FpStoreDouble,
     FpStoreSingle,
     FpSubtractDouble,
@@ -75,6 +92,7 @@ pub enum Instruction {
     MoveToC1,
     Multiply,
     MultiplyUnsigned,
+    MultiplyWithDest,
     NoOp,
     Or,
     OrImmediate,
@@ -113,9 +131,13 @@ impl Instruction {
             "and" => Some(Instruction::And),
             "andi" => Some(Instruction::AndImmediate),
             "beq" => Some(Instruction::BranchOnEq),
+            "bgt" => Some(Instruction::BranchOnGt),
+            "bge" => Some(Instruction::BranchOnGte),
             "bgez" => Some(Instruction::BranchOnGteZero),
             "bgezal" => Some(Instruction::BranchOnGteZeroAndLink),
             "bgtz" => Some(Instruction::BranchOnGtZero),
+            "blt" => Some(Instruction::BranchOnLt),
+            "ble" => Some(Instruction::BranchOnLte),
             "blez" => Some(Instruction::BranchOnLteZero),
             "bltz" => Some(Instruction::BranchOnLtZero),
             "bltzal" => Some(Instruction::BranchOnLtZeroAndLink),
@@ -128,10 +150,21 @@ impl Instruction {
             "add.s" => Some(Instruction::FpAdditionSingle),
             "bc1f" => Some(Instruction::FpBranchOnConditionFalse),
             "bc1t" => Some(Instruction::FpBranchOnConditionTrue),
+            "ceil.w.d" => Some(Instruction::FpCeilingDoubleToInteger),
+            "ceil.w.s" => Some(Instruction::FpCeilingSingleToInteger),
             "c.eq.d" => Some(Instruction::FpCompareEqDouble),
             "c.eq.s" => Some(Instruction::FpCompareEqSingle),
+            "c.gt.d" => Some(Instruction::FpCompareGtDouble),
+            "c.gt.s" => Some(Instruction::FpCompareGtSingle),
+            "c.ge.d" => Some(Instruction::FpCompareGteDouble),
+            "c.ge.s" => Some(Instruction::FpCompareGteSingle),
+            "c.lt.d" => Some(Instruction::FpCompareLtDouble),
+            "c.lt.s" => Some(Instruction::FpCompareLtSingle),
             "c.le.d" => Some(Instruction::FpCompareLteDouble),
             "c.le.s" => Some(Instruction::FpCompareLteSingle),
+            "movf" => Some(Instruction::FpConditionalMoveCp0),
+            "movt.d" => Some(Instruction::FpConditionalMoveDoubleCp1),
+            "movt.s" => Some(Instruction::FpConditionalMoveSingleCp1),
             "cvt.d.s" => Some(Instruction::FpConvertSingleToDouble),
             "cvt.d.w" => Some(Instruction::FpConvertIntegerToDouble),
             "cvt.s.d" => Some(Instruction::FpConvertDoubleToSingle),
@@ -148,6 +181,8 @@ impl Instruction {
             "mul.s" => Some(Instruction::FpMultiplySingle),
             "neg.d" => Some(Instruction::FpNegateDouble),
             "neg.s" => Some(Instruction::FpNegateSingle),
+            "sqrt.d" => Some(Instruction::FpSquareRootDouble),
+            "sqrt.s" => Some(Instruction::FpSquareRootSingle),
             "s.d" | "sdc1" => Some(Instruction::FpStoreDouble),
             "s.s" | "swc1" => Some(Instruction::FpStoreSingle),
             "sub.d" => Some(Instruction::FpSubtractDouble),
@@ -170,6 +205,7 @@ impl Instruction {
             "mtc1" => Some(Instruction::MoveToC1),
             "mult" => Some(Instruction::Multiply),
             "multu" => Some(Instruction::MultiplyUnsigned),
+            "mul" => Some(Instruction::MultiplyWithDest),
             "noop" => Some(Instruction::NoOp),
             "or" => Some(Instruction::Or),
             "ori" => Some(Instruction::OrImmediate),
@@ -200,7 +236,7 @@ impl Instruction {
         }
     }
 
-    pub fn parse(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
+    pub fn parse(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
         match instruction {
             // 3 CP0 regs
             Instruction::Add
@@ -210,6 +246,7 @@ impl Instruction {
             | Instruction::DivideUnsigned
             | Instruction::Multiply
             | Instruction::MultiplyUnsigned
+            | Instruction::MultiplyWithDest
             | Instruction::Or
             | Instruction::ShiftLeftLogicalVariable
             | Instruction::ShiftRightArithmeticVariable
@@ -220,15 +257,15 @@ impl Instruction {
             | Instruction::SetOnLtUnsigned
             | Instruction::Subtract
             | Instruction::SubtractUnsigned
-            | Instruction::Xor => Instruction::parse_3cp0(instruction, lex),
+            | Instruction::Xor => Instruction::parse_3cp0(instruction, parser),
             // 2 CP0 regs
-            Instruction::Move => Instruction::parse_2cp0(instruction, lex),
+            Instruction::Move | Instruction::FpConditionalMoveCp0 => {
+                Instruction::parse_2cp0(instruction, parser)
+            }
             // 2 CP0 regs + 1 imm
             Instruction::AddImmediate
             | Instruction::AddImmediateUnsigned
             | Instruction::AndImmediate
-            | Instruction::LoadImmediate
-            | Instruction::LoadUpperImmediate
             | Instruction::OrImmediate
             | Instruction::ShiftLeftLogical
             | Instruction::ShiftRightArithmetic
@@ -237,18 +274,25 @@ impl Instruction {
             | Instruction::SetOnGtImmediateUnsigned
             | Instruction::SetOnLtImmediate
             | Instruction::SetOnLtImmediateUnsigned
-            | Instruction::XorImmediate => Instruction::parse_2cp0_1imm(instruction, lex),
+            | Instruction::XorImmediate => Instruction::parse_2cp0_1imm(instruction, parser),
             // 2 CP0 regs + 1 lab
-            Instruction::BranchOnEq | Instruction::BranchOnNotEq => {
-                Instruction::parse_2cp0_1lab(instruction, lex)
-            }
+            Instruction::BranchOnEq
+            | Instruction::BranchOnGt
+            | Instruction::BranchOnGte
+            | Instruction::BranchOnLt
+            | Instruction::BranchOnLte
+            | Instruction::BranchOnNotEq => Instruction::parse_2cp0_1lab(instruction, parser),
             // 1 CP0 reg
             Instruction::JumpRegister | Instruction::MoveFromHi | Instruction::MoveFromLo => {
-                Instruction::parse_1cp0(instruction, lex)
+                Instruction::parse_1cp0(instruction, parser)
             }
             // 1 CP0 reg + 1 CP1 reg
             Instruction::MoveFromC1 | Instruction::MoveToC1 => {
-                Instruction::parse_1cp0_1cp1(instruction, lex)
+                Instruction::parse_1cp0_1cp1(instruction, parser)
+            }
+            // 1 CP0 reg + 1 imm
+            Instruction::LoadImmediate | Instruction::LoadUpperImmediate => {
+                Instruction::parse_1cp0_1imm(instruction, parser)
             }
             // 1 CP0 reg + 1 lab
             Instruction::BranchOnGteZero
@@ -257,7 +301,7 @@ impl Instruction {
             | Instruction::BranchOnLteZero
             | Instruction::BranchOnLtZero
             | Instruction::BranchOnLtZeroAndLink
-            | Instruction::LoadAddress => Instruction::parse_1cp0_1lab(instruction, lex),
+            | Instruction::LoadAddress => Instruction::parse_1cp0_1lab(instruction, parser),
             // 1 CP0 reg + 1 offset
             Instruction::LoadByte
             | Instruction::LoadByteUnsigned
@@ -267,7 +311,7 @@ impl Instruction {
             | Instruction::StoreByte
             | Instruction::StoreConditional
             | Instruction::StoreHalfword
-            | Instruction::StoreWord => Instruction::parse_1cp0_1off(instruction, lex),
+            | Instruction::StoreWord => Instruction::parse_1cp0_1off(instruction, parser),
             // 3 CP1 regs
             Instruction::FpAdditionDouble
             | Instruction::FpAdditionSingle
@@ -276,14 +320,24 @@ impl Instruction {
             | Instruction::FpMultiplyDouble
             | Instruction::FpMultiplySingle
             | Instruction::FpSubtractDouble
-            | Instruction::FpSubtractSingle => Instruction::parse_3cp1(instruction, lex),
+            | Instruction::FpSubtractSingle => Instruction::parse_3cp1(instruction, parser),
             // 2 CP1 regs
             Instruction::FpAbsoluteValueDouble
             | Instruction::FpAbsoluteValueSingle
+            | Instruction::FpCeilingDoubleToInteger
+            | Instruction::FpCeilingSingleToInteger
             | Instruction::FpCompareEqDouble
             | Instruction::FpCompareEqSingle
+            | Instruction::FpCompareGtDouble
+            | Instruction::FpCompareGtSingle
+            | Instruction::FpCompareGteDouble
+            | Instruction::FpCompareGteSingle
+            | Instruction::FpCompareLtDouble
+            | Instruction::FpCompareLtSingle
             | Instruction::FpCompareLteDouble
             | Instruction::FpCompareLteSingle
+            | Instruction::FpConditionalMoveDoubleCp1
+            | Instruction::FpConditionalMoveSingleCp1
             | Instruction::FpConvertSingleToDouble
             | Instruction::FpConvertIntegerToDouble
             | Instruction::FpConvertDoubleToSingle
@@ -293,151 +347,143 @@ impl Instruction {
             | Instruction::FpMoveDouble
             | Instruction::FpMoveSingle
             | Instruction::FpNegateDouble
-            | Instruction::FpNegateSingle => Instruction::parse_2cp1(instruction, lex),
+            | Instruction::FpNegateSingle
+            | Instruction::FpSquareRootDouble
+            | Instruction::FpSquareRootSingle => Instruction::parse_2cp1(instruction, parser),
             // 1 CP1 reg + 1 off
             Instruction::FpLoadDouble
             | Instruction::FpLoadSingle
             | Instruction::FpStoreDouble
-            | Instruction::FpStoreSingle => Instruction::parse_1cp1_1off(instruction, lex),
+            | Instruction::FpStoreSingle => Instruction::parse_1cp1_1off(instruction, parser),
             // 1 lab
             Instruction::Jump
             | Instruction::JumpAndLink
             | Instruction::FpBranchOnConditionFalse
-            | Instruction::FpBranchOnConditionTrue => Instruction::parse_1lab(instruction, lex),
+            | Instruction::FpBranchOnConditionTrue => Instruction::parse_1lab(instruction, parser),
             // No args
             Instruction::NoOp | Instruction::Syscall => Ok(Expression::NoArgs(instruction)),
         }
     }
 
-    fn parse_3cp0(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let rd = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rt = get_cp0_reg(lex)?;
+    fn parse_3cp0(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rt = get_cp0_reg(parser)?;
         Ok(Expression::Cp03(instruction, rd, rs, rt))
     }
 
-    fn parse_2cp0(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let rd = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp0_reg(lex)?;
+    fn parse_2cp0(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp0_reg(parser)?;
         Ok(Expression::Cp02(instruction, rd, rs))
     }
 
-    fn parse_2cp0_1imm(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let rd = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let imm = get_int_imm(lex)?;
+    fn parse_2cp0_1imm(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let imm = get_int_imm(parser)?;
         Ok(Expression::Cp02Imm1(instruction, rd, rs, imm))
     }
 
-    fn parse_2cp0_1lab(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let rd = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let lab = get_lab(lex)?;
+    fn parse_2cp0_1lab(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let lab = get_lab(parser)?;
         Ok(Expression::Cp02Lab1(instruction, rd, rs, lab))
     }
 
-    fn parse_1cp0(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let rs = get_cp0_reg(lex)?;
+    fn parse_1cp0(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rs = get_cp0_reg(parser)?;
         Ok(Expression::Cp01(instruction, rs))
     }
 
-    fn parse_1cp0_1cp1(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let rcp0 = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let rcp1 = get_cp1_reg(lex)?;
+    fn parse_1cp0_1cp1(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rcp0 = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let rcp1 = get_cp1_reg(parser)?;
         Ok(Expression::Cp01Cp11(instruction, rcp0, rcp1))
     }
 
-    fn parse_1cp0_1lab(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let r = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let lab = get_lab(lex)?;
+    fn parse_1cp0_1imm(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let imm = get_int_imm(parser)?;
+        Ok(Expression::Cp01Imm1(instruction, rd, imm))
+    }
+
+    fn parse_1cp0_1lab(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let r = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let lab = get_lab(parser)?;
         Ok(Expression::Cp01Lab1(instruction, r, lab))
     }
 
-    fn parse_1cp0_1off(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let r = get_cp0_reg(lex)?;
-        get_comma(lex)?;
-        let (offset, offset_reg) = get_offset(lex)?;
+    fn parse_1cp0_1off(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let r = get_cp0_reg(parser)?;
+        get_comma(parser)?;
+        let (offset, offset_reg) = get_offset(parser)?;
         Ok(Expression::Cp01Off1(instruction, r, offset, offset_reg))
     }
 
-    fn parse_3cp1(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let rd = get_cp1_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp1_reg(lex)?;
-        get_comma(lex)?;
-        let rt = get_cp1_reg(lex)?;
+    fn parse_3cp1(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp1_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp1_reg(parser)?;
+        get_comma(parser)?;
+        let rt = get_cp1_reg(parser)?;
         Ok(Expression::Cp13(instruction, rd, rs, rt))
     }
 
-    fn parse_2cp1(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let rd = get_cp1_reg(lex)?;
-        get_comma(lex)?;
-        let rs = get_cp1_reg(lex)?;
+    fn parse_2cp1(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let rd = get_cp1_reg(parser)?;
+        get_comma(parser)?;
+        let rs = get_cp1_reg(parser)?;
         Ok(Expression::Cp12(instruction, rd, rs))
     }
 
-    fn parse_1cp1_1off(
-        instruction: Instruction,
-        lex: &mut Lexer<Token>,
-    ) -> Result<Expression, Error> {
-        let r = get_cp1_reg(lex)?;
-        get_comma(lex)?;
-        let (offset, offset_reg) = get_offset(lex)?;
+    fn parse_1cp1_1off(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let r = get_cp1_reg(parser)?;
+        get_comma(parser)?;
+        let (offset, offset_reg) = get_offset(parser)?;
         Ok(Expression::Cp01Off1(instruction, r, offset, offset_reg))
     }
 
-    fn parse_1lab(instruction: Instruction, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let lab = get_lab(lex)?;
+    fn parse_1lab(instruction: Instruction, parser: &mut Parser) -> Result<Expression, Error> {
+        let lab = get_lab(parser)?;
         Ok(Expression::Lab1(instruction, lab))
     }
 }
 
-fn get_comma(lex: &mut Lexer<Token>) -> Result<(), Error> {
-    match lex
+fn get_comma(parser: &mut Parser) -> Result<(), Error> {
+    match parser
         .next()
-        .ok_or(Error::MissingComma(lspan_to_csspan(lex.span())))?
+        .ok_or(Error::MissingComma(lspan_to_csspan(parser.lexer.span())))?
     {
         Token::Comma => Ok(()),
         other => Err(Error::UnexpectedToken {
             got: other,
+            span: parser.lexer.span(),
             expected: "comma",
         }),
     }
 }
 
-fn get_cp0_reg(lex: &mut Lexer<Token>) -> Result<Register, Error> {
-    let token = lex.next().ok_or(Error::Eof)?;
+fn get_cp0_reg(parser: &mut Parser) -> Result<Register, Error> {
+    let token = parser.next().ok_or(Error::Eof)?;
     match &token {
         Token::Register(reg) => {
             if reg.is_fp_reg() {
                 Err(Error::IncorrectCoprocRegister {
                     got: "1",
                     expected: "0",
-                    token,
+                    span: parser.lexer.span(),
                 })
             } else {
                 Ok(*reg)
@@ -445,44 +491,47 @@ fn get_cp0_reg(lex: &mut Lexer<Token>) -> Result<Register, Error> {
         }
         _ => Err(Error::UnexpectedToken {
             got: token,
+            span: parser.lexer.span(),
             expected: "CP0 register",
         }),
     }
 }
 
-fn get_int_imm(lex: &mut Lexer<Token>) -> Result<i32, Error> {
-    let token = lex.next().ok_or(Error::Eof)?;
+fn get_int_imm(parser: &mut Parser) -> Result<i32, Error> {
+    let token = parser.next().ok_or(Error::Eof)?;
     match &token {
         Token::NumberImmediate(string) => match parse_immediate(&string) {
             Some(int) => Ok(int),
-            None => Err(Error::InvalidIntegerLiteral(token))
+            None => Err(Error::InvalidIntegerLiteral(token, parser.lexer.span())),
         },
         _ => Err(Error::UnexpectedToken {
             got: token,
+            span: parser.lexer.span(),
             expected: "integer literal",
         }),
     }
 }
 
-fn get_lab(lex: &mut Lexer<Token>) -> Result<String, Error> {
-    match lex.next().ok_or(Error::Eof)? {
+fn get_lab(parser: &mut Parser) -> Result<String, Error> {
+    match parser.next().ok_or(Error::Eof)? {
         Token::Identifier(Identifier::Label(label)) => Ok(label),
         other => Err(Error::UnexpectedToken {
             got: other,
+            span: parser.lexer.span(),
             expected: "label",
         }),
     }
 }
 
-fn get_cp1_reg(lex: &mut Lexer<Token>) -> Result<Register, Error> {
-    let token = lex.next().ok_or(Error::Eof)?;
+fn get_cp1_reg(parser: &mut Parser) -> Result<Register, Error> {
+    let token = parser.next().ok_or(Error::Eof)?;
     match &token {
         Token::Register(reg) => {
             if !reg.is_fp_reg() {
                 Err(Error::IncorrectCoprocRegister {
                     got: "0",
                     expected: "1",
-                    token: token,
+                    span: parser.lexer.span(),
                 })
             } else {
                 Ok(*reg)
@@ -490,17 +539,19 @@ fn get_cp1_reg(lex: &mut Lexer<Token>) -> Result<Register, Error> {
         }
         _ => Err(Error::UnexpectedToken {
             got: token,
+            span: parser.lexer.span(),
             expected: "CP1 register",
         }),
     }
 }
 
-fn get_offset(lex: &mut Lexer<Token>) -> Result<(i32, Register), Error> {
-    let token = lex.next().ok_or(Error::Eof)?;
+fn get_offset(parser: &mut Parser) -> Result<(i32, Register), Error> {
+    let token = parser.next().ok_or(Error::Eof)?;
     match &token {
         Token::OffsetFrom(offset) => Ok(*offset),
         _ => Err(Error::UnexpectedToken {
             got: token,
+            span: parser.lexer.span(),
             expected: "offset",
         }),
     }

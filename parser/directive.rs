@@ -1,4 +1,9 @@
-use crate::{expression::Expression, identifier::Identifier, parser::Error, token::{Token, parse_immediate}};
+use crate::{
+    expression::Expression,
+    identifier::Identifier,
+    parser::{Error, Parser},
+    token::{parse_immediate, Token},
+};
 use logos::{Lexer, Logos};
 use std::f32;
 
@@ -35,64 +40,74 @@ impl Directive {
         }
     }
 
-    pub fn parse(directive: Directive, lex: &mut Lexer<Token>) -> Result<Expression, Error> {
+    pub fn parse(directive: Directive, parser: &mut Parser) -> Result<Expression, Error> {
         match directive {
             Directive::DataSection | Directive::TextSection => Ok(Expression::Section(directive)),
-            Directive::Align => Directive::parse_align(lex),
-            Directive::AsciiString => Directive::parse_ascii(lex),
-            Directive::AsciiStringNullTerminated => Directive::parse_asciiz(lex),
-            Directive::ByteImmediate => Directive::parse_byte(lex),
-            Directive::FloatImmediate => Directive::parse_float(lex),
-            Directive::GlobalSymbol => Directive::parse_globl(lex),
-            Directive::HalfWordImmediate => Directive::parse_half(lex),
-            Directive::SpaceSection => Directive::parse_space(lex),
-            Directive::WordImmediate => Directive::parse_word(lex),
+            Directive::Align => Directive::parse_align(parser),
+            Directive::AsciiString => Directive::parse_ascii(parser),
+            Directive::AsciiStringNullTerminated => Directive::parse_asciiz(parser),
+            Directive::ByteImmediate => Directive::parse_byte(parser),
+            Directive::FloatImmediate => Directive::parse_float(parser),
+            Directive::GlobalSymbol => Directive::parse_globl(parser),
+            Directive::HalfWordImmediate => Directive::parse_half(parser),
+            Directive::SpaceSection => Directive::parse_space(parser),
+            Directive::WordImmediate => Directive::parse_word(parser),
         }
     }
 
-    fn parse_align(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_align(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(ref string) => match parse_immediate(string) {
                 Some(align) => {
                     if 0 <= align && align <= 3 {
-                        Ok(Expression::IntegerDirective(Directive::ByteImmediate, align))
+                        Ok(Expression::IntegerDirective(
+                            Directive::ByteImmediate,
+                            align,
+                        ))
                     } else {
-                        Err(Error::InvalidAlignment(token))
+                        Err(Error::InvalidAlignment {
+                            token,
+                            span: parser.lexer.span(),
+                        })
                     }
-                },
-                None => Err(Error::InvalidIntegerLiteral(token)),
-            }
+                }
+                None => Err(Error::InvalidIntegerLiteral(token, parser.lexer.span())),
+            },
             Token::StringLiteral(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "integer literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "integer literal",
             }),
         }
     }
 
-    fn parse_ascii(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_ascii(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::StringLiteral(string) => {
                 Ok(Expression::StringDirective(Directive::AsciiString, string))
             }
             Token::NumberImmediate(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "string literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "string literal",
             }),
         }
     }
 
-    fn parse_asciiz(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_asciiz(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::StringLiteral(mut string) => {
                 string.push('\0');
@@ -100,189 +115,317 @@ impl Directive {
             }
             Token::NumberImmediate(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "string literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "string literal",
             }),
         }
     }
 
-    fn parse_byte(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_byte(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(string) => match parse_immediate(&string) {
                 Some(int) => {
                     if int <= std::u8::MAX as i32 {
-                        Ok(Expression::IntegerDirective(
-                            Directive::HalfWordImmediate,
-                            int
-                        ))
-                    } else {
-                        Err(Error::ByteLiteralOutOfRange(Token::NumberImmediate(string)))
-                    }
-                },
-                None => Err(Error::InvalidIntegerLiteral(Token::NumberImmediate(string))),
-            }
-            Token::NumberImmediateList(string) => {
-                let mut bytes = Vec::new();
-                for s in string.split(',').map(|s| s.trim()) {
-                    match parse_immediate(s) {
-                        Some(byte) => {
-                            if byte < std::u8::MAX as i32 {
-                                bytes.push(byte)
-                            } else {
-                                return Err(Error::ByteLiteralOutOfRange(
-                                    Token::NumberImmediate(s.to_string())
-                                ))
+                        match parser.next().ok_or(Error::Eof)? {
+                            Token::Comma => Ok(Expression::IntegersDirective(
+                                Directive::ByteImmediate,
+                                get_bytes_list(parser)?,
+                            )),
+                            other => {
+                                parser.carry = Some(other);
+                                Ok(Expression::IntegerDirective(Directive::ByteImmediate, int))
                             }
-                        },
-                        None => return Err(Error::InvalidFloatLiteral(Token::NumberImmediate(s.to_string())))
+                        }
+                    } else {
+                        Err(Error::ByteLiteralOutOfRange {
+                            token: Token::NumberImmediate(string),
+                            span: parser.lexer.span(),
+                        })
                     }
                 }
-                Ok(Expression::FloatsDirective(Directive::FloatImmediate, bytes))
-            }
+                None => Err(Error::InvalidIntegerLiteral(
+                    Token::NumberImmediate(string),
+                    parser.lexer.span(),
+                )),
+            },
             Token::StringLiteral(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "half word literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "half word literal",
             }),
         }
     }
 
-    fn parse_float(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_float(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(string) => match string.parse().ok() {
-                Some(float) => Ok(Expression::FloatDirective(Directive::FloatImmediate, float)),
-                None => Err(Error::InvalidFloatLiteral(Token::NumberImmediate(string))),
-            }
-            Token::NumberImmediateList(string) => {
-                let mut floats = Vec::new();
-                for s in string.split(',').map(|s| s.trim()) {
-                    match s.parse().ok() {
-                        Some(float) => floats.push(float),
-                        None => return Err(Error::InvalidFloatLiteral(Token::NumberImmediate(s.to_string())))
+                Some(float) => match parser.next().ok_or(Error::Eof)? {
+                    Token::Comma => Ok(Expression::FloatsDirective(
+                        Directive::FloatImmediate,
+                        get_floats_list(parser)?,
+                    )),
+                    other => {
+                        parser.carry = Some(other);
+                        Ok(Expression::FloatDirective(Directive::FloatImmediate, float))
                     }
-                }
-                Ok(Expression::IntegersDirective(Directive::ByteImmediate, bytes))
-            }
+                },
+                None => Err(Error::InvalidFloatLiteral(
+                    Token::NumberImmediate(string),
+                    parser.lexer.span(),
+                )),
+            },
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "float literal",
-            })
+            }),
         }
     }
 
-    fn parse_globl(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_globl(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::Identifier(Identifier::Label(label)) => {
                 Ok(Expression::GlobalDirective(Directive::GlobalSymbol, label))
             }
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "label",
             }),
         }
     }
 
-    fn parse_half(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_half(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(string) => match parse_immediate(&string) {
                 Some(int) => {
                     if int <= std::u16::MAX as i32 {
-                        Ok(Expression::IntegerDirective(
-                            Directive::HalfWordImmediate,
-                            int
-                        ))
-                    } else {
-                        Err(Error::HalfLiteralOutOfRange(Token::NumberImmediate(string)))
-                    }
-                },
-                None => Err(Error::InvalidIntegerLiteral(Token::NumberImmediate(string))),
-            }
-            Token::NumberImmediateList(string) => {
-                let mut halves = Vec::new();
-                for s in string.split(',').map(|s| s.trim()) {
-                    match parse_immediate(s) {
-                        Some(half) => {
-                            if half < std::u16::MAX as i32 {
-                                halves.push(half)
-                            } else {
-                                return Err(Error::ByteLiteralOutOfRange(
-                                    Token::NumberImmediate(s.to_string())
+                        match parser.next().ok_or(Error::Eof)? {
+                            Token::Comma => Ok(Expression::IntegersDirective(
+                                Directive::HalfWordImmediate,
+                                get_halves_list(parser)?,
+                            )),
+                            other => {
+                                parser.carry = Some(other);
+                                Ok(Expression::IntegerDirective(
+                                    Directive::HalfWordImmediate,
+                                    int,
                                 ))
                             }
-                        },
-                        None => return Err(Error::InvalidFloatLiteral(Token::NumberImmediate(s.to_string())))
+                        }
+                    } else {
+                        Err(Error::HalfLiteralOutOfRange {
+                            token: Token::NumberImmediate(string),
+                            span: parser.lexer.span(),
+                        })
                     }
                 }
-                Ok(Expression::IntegersDirective(Directive::HalfWordImmediate, halvess))
-            }
+                None => Err(Error::InvalidIntegerLiteral(
+                    Token::NumberImmediate(string),
+                    parser.lexer.span(),
+                )),
+            },
             Token::StringLiteral(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "half word literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "half word literal",
             }),
         }
     }
 
-    fn parse_space(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_space(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(string) => match parse_immediate(&string) {
                 Some(amt) => Ok(Expression::IntegerDirective(Directive::SpaceSection, amt)),
-                None => Err(Error::InvalidIntegerLiteral(Token::NumberImmediate(string)))
-            }
+                None => Err(Error::InvalidIntegerLiteral(
+                    Token::NumberImmediate(string),
+                    parser.lexer.span(),
+                )),
+            },
             Token::StringLiteral(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "integer literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "integer literal",
             }),
         }
     }
 
-    fn parse_word(lex: &mut Lexer<Token>) -> Result<Expression, Error> {
-        let token = lex.next().ok_or(Error::Eof)?;
+    fn parse_word(parser: &mut Parser) -> Result<Expression, Error> {
+        let token = parser.next().ok_or(Error::Eof)?;
         match token {
             Token::NumberImmediate(string) => match parse_immediate(&string) {
-                Some(word) => Ok(Expression::IntegerDirective(Directive::WordImmediate, word)),
-                None => Err(Error::InvalidIntegerLiteral(Token::NumberImmediate(string)))
-            }
-            Token::NumberImmediateList(string) => {
-                let mut words = Vec::new();
-                for s in string.split(',').map(|s| s.trim()) {
-                    match parse_immediate(s) {
-                        Some(word) => {
-                            words.push(word)
-                        },
-                        None => return Err(Error::InvalidFloatLiteral(Token::NumberImmediate(s.to_string())))
+                Some(word) => match parser.next().ok_or(Error::Eof)? {
+                    Token::Comma => Ok(Expression::IntegersDirective(
+                        Directive::WordImmediate,
+                        get_words_list(parser)?,
+                    )),
+                    other => {
+                        parser.carry = Some(other);
+                        Ok(Expression::IntegerDirective(Directive::WordImmediate, word))
                     }
-                }
-                Ok(Expression::IntegersDirective(Directive::WordImmediate, words))
-            }
+                },
+                None => Err(Error::InvalidIntegerLiteral(
+                    Token::NumberImmediate(string),
+                    parser.lexer.span(),
+                )),
+            },
             Token::StringLiteral(_) => Err(Error::IncorrectLiteralType {
                 got: token,
+                span: parser.lexer.span(),
                 expected: "word literal",
             }),
             other => Err(Error::UnexpectedToken {
                 got: other,
+                span: parser.lexer.span(),
                 expected: "word literal",
             }),
         }
     }
+}
+
+fn get_bytes_list(parser: &mut Parser) -> Result<Vec<i32>, Error> {
+    let mut bytes = Vec::new();
+    loop {
+        let token = parser.next().ok_or(Error::Eof)?;
+        bytes.push(match token {
+            Token::NumberImmediate(ref string) => match parse_immediate(string) {
+                Some(int) => {
+                    if int < std::u8::MAX as i32 {
+                        Ok(int)
+                    } else {
+                        Err(Error::ByteLiteralOutOfRange {
+                            token,
+                            span: parser.lexer.span(),
+                        })
+                    }
+                }
+                None => Err(Error::InvalidIntegerLiteral(token, parser.lexer.span())),
+            },
+            other => Err(Error::UnexpectedToken {
+                got: other,
+                span: parser.lexer.span(),
+                expected: "integer literal",
+            }),
+        }?);
+        match parser.next().ok_or(Error::Eof)? {
+            Token::Comma => continue,
+            other => {
+                parser.carry = Some(other);
+                break;
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn get_floats_list(parser: &mut Parser) -> Result<Vec<f32>, Error> {
+    let mut floats = Vec::new();
+    loop {
+        let token = parser.next().ok_or(Error::Eof)?;
+        floats.push(match token {
+            Token::NumberImmediate(ref string) => match string.parse().ok() {
+                Some(float) => Ok(float),
+                None => Err(Error::InvalidFloatLiteral(token, parser.lexer.span())),
+            },
+            other => Err(Error::UnexpectedToken {
+                got: other,
+                span: parser.lexer.span(),
+                expected: "integer literal",
+            }),
+        }?);
+        match parser.next().ok_or(Error::Eof)? {
+            Token::Comma => continue,
+            other => {
+                parser.carry = Some(other);
+                break;
+            }
+        }
+    }
+    Ok(floats)
+}
+
+fn get_halves_list(parser: &mut Parser) -> Result<Vec<i32>, Error> {
+    let mut halves = Vec::new();
+    loop {
+        let token = parser.next().ok_or(Error::Eof)?;
+        halves.push(match token {
+            Token::NumberImmediate(ref string) => match parse_immediate(string) {
+                Some(int) => {
+                    if int < std::u16::MAX as i32 {
+                        Ok(int)
+                    } else {
+                        Err(Error::HalfLiteralOutOfRange {
+                            token,
+                            span: parser.lexer.span(),
+                        })
+                    }
+                }
+                None => Err(Error::InvalidIntegerLiteral(token, parser.lexer.span())),
+            },
+            other => Err(Error::UnexpectedToken {
+                got: other,
+                span: parser.lexer.span(),
+                expected: "integer literal",
+            }),
+        }?);
+        match parser.next().ok_or(Error::Eof)? {
+            Token::Comma => continue,
+            other => {
+                parser.carry = Some(other);
+                break;
+            }
+        }
+    }
+    Ok(halves)
+}
+
+fn get_words_list(parser: &mut Parser) -> Result<Vec<i32>, Error> {
+    let mut words = Vec::new();
+    loop {
+        let token = parser.next().ok_or(Error::Eof)?;
+        words.push(match token {
+            Token::NumberImmediate(ref string) => parse_immediate(string)
+                .ok_or(Error::InvalidIntegerLiteral(token, parser.lexer.span())),
+            other => Err(Error::UnexpectedToken {
+                got: other,
+                span: parser.lexer.span(),
+                expected: "integer literal",
+            }),
+        }?);
+        match parser.next().ok_or(Error::Eof)? {
+            Token::Comma => continue,
+            other => {
+                parser.carry = Some(other);
+                break;
+            }
+        }
+    }
+    Ok(words)
 }
 
 #[test]
