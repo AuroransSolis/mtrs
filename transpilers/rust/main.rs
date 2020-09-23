@@ -1,5 +1,4 @@
-use logos::Logos;
-use mips_parser::{Error as LexParseError, Parser};
+use mips_parser::{error_reporting::report_parse_error, Error as LexParseError, Parser};
 use std::{
     fs::{read_to_string, write},
     io::{Error as IoError, Read, Write},
@@ -32,7 +31,13 @@ fn main() -> Result<(), Error> {
     } = Arguments::from_args();
     let file_contents = read_to_string(&input_file).map_err(|e| Error::IoError(e))?;
     let parser = Parser::new(&file_contents);
-    let expressions = parser.parse().map_err(|e| Error::LexParseError(e))?;
+    let expressions = match parser.parse() {
+        Ok(expressions) => Ok(expressions),
+        Err(err) => {
+            report_parse_error(Path::new(&input_file), &file_contents, err.clone());
+            Err(Error::LexParseError(err))
+        }
+    }?;
     for expression in expressions {
         println!("expression: {:?}", expression);
     }
